@@ -1,107 +1,141 @@
 package store
 
 import (
-	"encoding/json"
-	"errors"
+	"crypto/sha256"
 	"fmt"
-	"os"
 	"path/filepath"
+	"time"
+    "os"
 )
 
-// Config holds the configuration for the ObjectStore.
-type Config struct {
-	StorageDirectory string `json:"storage_directory"`
+type Store struct {
+	FileStorage   *FileStorage
+	MetadataStore *MetadataStore
 }
 
-// ObjectStore represents a simple object storage system.
-type ObjectStore struct {
-	config Config
-}
-
-// NewObjectStore creates a new ObjectStore instance using the provided configuration file.
-func NewObjectStore(configFile string) (*ObjectStore, error) {
-	config := &Config{}
-	file, err := os.Open(configFile)
+func NewStore(configFile, dbPath string) (*Store, error) {
+	fs, err := NewFileStorage(configFile)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open config file: %w", err)
+		return nil, fmt.Errorf("failed to create FileStorage: %w", err)
 	}
-	defer file.Close()
 
-	decoder := json.NewDecoder(file)
-	err = decoder.Decode(config)
+	ms, err := NewMetadataStore(dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode config: %w", err)
+		return nil, fmt.Errorf("failed to create MetadataStore: %w", err)
 	}
 
-	if err := os.MkdirAll(config.StorageDirectory, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create storage directory: %w", err)
-	}
-
-	return &ObjectStore{
-		config: *config,
+	return &Store{
+		FileStorage:   fs,
+		MetadataStore: ms,
 	}, nil
 }
 
-// Create stores a new object with the given name and data.
-func (s *ObjectStore) Create(name string, data []byte) error {
-	filePath := filepath.Join(s.config.StorageDirectory, name)
-	_, err := os.Stat(filePath)
-	if err == nil {
-		return fmt.Errorf("object with name %s already exists", name)
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("failed to check file existence: %w", err)
-	}
+func (s *Store) CreateObject(objectPath string, data []byte) (string, error) {
+    objectID := generateObjectID(data)
+    localPath := filepath.Join(s.FileStorage.config.StorageDirectory, objectID)
 
-	return os.WriteFile(filePath, data, 0644)
+    // Check if the file already exists
+    if _, err := os.Stat(localPath); err == nil {
+        // File exists, check if metadata exists
+        metadata, err := s.MetadataStore.Get(objectID)
+        if err == nil && metadata.ObjectPath == objectPath {
+            // Object already exists with the same path, return the object ID
+            return objectID, nil
+        }
+    }
+
+    err := s.FileStorage.Create(objectID, data)
+    if err != nil {
+        return "", fmt.Errorf("failed to create file: %w", err)
+    }
+
+    metadata := &Metadata{
+        ObjectID:   objectID,
+        ObjectPath: objectPath,
+        LocalPath:  localPath,
+        CreatedAt:  time.Now(),
+        UpdatedAt:  time.Now(),
+    }
+
+    err = s.MetadataStore.Create(metadata)
+    if err != nil {
+        // If metadata creation fails, rollback file creation
+        s.FileStorage.Delete(objectID)
+        return "", fmt.Errorf("failed to create metadata: %w", err)
+    }
+
+    return objectID, nil
 }
 
-// Read retrieves the object with the given name.
-func (s *ObjectStore) Read(name string) ([]byte, error) {
-	filePath := filepath.Join(s.config.StorageDirectory, name)
-	data, err := os.ReadFile(filePath)
+func (s *Store) ReadObject(objectIDOrPath string) ([]byte, error) {
+	metadata, err := s.getMetadata(objectIDOrPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read object %s: %w", name, err)
+		return nil, fmt.Errorf("failed to get metadata: %w", err)
 	}
+
+	data, err := s.FileStorage.Read(metadata.ObjectID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
 	return data, nil
 }
 
-// Update modifies the content of an existing object.
-func (s *ObjectStore) Update(name string, data []byte) error {
-	filePath := filepath.Join(s.config.StorageDirectory, name)
-	_, err := os.Stat(filePath)
-	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("object %s does not exist", name)
-	}
+func (s *Store) UpdateObject(objectIDOrPath string, data []byte) error {
+	metadata, err := s.getMetadata(objectIDOrPath)
 	if err != nil {
-		return fmt.Errorf("failed to check file existence: %w", err)
+		return fmt.Errorf("failed to get metadata: %w", err)
 	}
 
-	return os.WriteFile(filePath, data, 0644)
-}
-
-// Delete removes the object with the given name.
-func (s *ObjectStore) Delete(name string) error {
-	filePath := filepath.Join(s.config.StorageDirectory, name)
-	err := os.Remove(filePath)
+	err = s.FileStorage.Update(metadata.ObjectID, data)
 	if err != nil {
-		return fmt.Errorf("failed to delete object %s: %w", name, err)
+		return fmt.Errorf("failed to update file: %w", err)
 	}
+
+	metadata.UpdatedAt = time.Now()
+	err = s.MetadataStore.Update(metadata)
+	if err != nil {
+		return fmt.Errorf("failed to update metadata: %w", err)
+	}
+
 	return nil
 }
 
-// List returns a slice of all object names in the store.
-func (s *ObjectStore) List() ([]string, error) {
-	entries, err := os.ReadDir(s.config.StorageDirectory)
+func (s *Store) DeleteObject(objectIDOrPath string) error {
+	metadata, err := s.getMetadata(objectIDOrPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read storage directory: %w", err)
+		return fmt.Errorf("failed to get metadata: %w", err)
 	}
 
-	var names []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			names = append(names, entry.Name())
-		}
+	err = s.FileStorage.Delete(metadata.ObjectID)
+	if err != nil {
+		return fmt.Errorf("failed to delete file: %w", err)
 	}
-	return names, nil
+
+	err = s.MetadataStore.Delete(metadata.ObjectID)
+	if err != nil {
+		return fmt.Errorf("failed to delete metadata: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Store) getMetadata(objectIDOrPath string) (*Metadata, error) {
+	metadata, err := s.MetadataStore.Get(objectIDOrPath)
+	if err == nil {
+		return metadata, nil
+	}
+
+	// If not found by ObjectID, try by ObjectPath
+	metadata, err = s.MetadataStore.GetByObjectPath(objectIDOrPath)
+	if err != nil {
+		return nil, fmt.Errorf("object not found: %s", objectIDOrPath)
+	}
+
+	return metadata, nil
+}
+
+func generateObjectID(data []byte) string {
+	hash := sha256.Sum256(data)
+	return fmt.Sprintf("%x", hash)
 }

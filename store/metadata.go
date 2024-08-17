@@ -10,9 +10,23 @@ import (
 
 type Metadata struct {
 	ObjectID   string
+	ObjectPath string
 	LocalPath  string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+}
+
+func (ms *MetadataStore) GetByObjectPath(objectPath string) (*Metadata, error) {
+	row := ms.db.QueryRow("SELECT object_id, object_path, local_path, created_at, updated_at FROM metadata WHERE object_path = ?", objectPath)
+	metadata := &Metadata{}
+	err := row.Scan(&metadata.ObjectID, &metadata.ObjectPath, &metadata.LocalPath, &metadata.CreatedAt, &metadata.UpdatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("metadata not found for objectPath: %s", objectPath)
+		}
+		return nil, fmt.Errorf("failed to get metadata: %w", err)
+	}
+	return metadata, nil
 }
 
 type MetadataStore struct {
@@ -26,14 +40,16 @@ func NewMetadataStore(dbPath string) (*MetadataStore, error) {
 	}
 
 	// Create table if it doesn't exist
-	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS metadata (
-			object_id TEXT PRIMARY KEY,
-			local_path TEXT NOT NULL,
-			created_at DATETIME NOT NULL,
-			updated_at DATETIME NOT NULL
-		)
-	`)
+    _, err = db.Exec(`
+        CREATE TABLE IF NOT EXISTS metadata (
+            object_id TEXT PRIMARY KEY,
+            object_path TEXT NOT NULL UNIQUE,
+            local_path TEXT NOT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_object_path ON metadata(object_path);
+    `)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create metadata table: %w", err)
 	}
@@ -42,15 +58,14 @@ func NewMetadataStore(dbPath string) (*MetadataStore, error) {
 }
 
 func (ms *MetadataStore) Create(metadata *Metadata) error {
-	_, err := ms.db.Exec(`
-		INSERT INTO metadata (object_id, local_path, created_at, updated_at)
-		VALUES (?, ?, ?, ?)
-	`, metadata.ObjectID, metadata.LocalPath, metadata.CreatedAt, metadata.UpdatedAt)
-	
-	if err != nil {
-		return fmt.Errorf("failed to create metadata: %w", err)
-	}
-	return nil
+    _, err := ms.db.Exec(
+        "INSERT INTO metadata (object_id, object_path, local_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        metadata.ObjectID, metadata.ObjectPath, metadata.LocalPath, metadata.CreatedAt, metadata.UpdatedAt,
+    )
+    if err != nil {
+        return fmt.Errorf("failed to create metadata: %w", err)
+    }
+    return nil
 }
 
 func (ms *MetadataStore) Get(objectID string) (*Metadata, error) {
