@@ -9,7 +9,7 @@ import (
 )
 
 func TestStore(t *testing.T) {
-    tempDir, err := os.MkdirTemp("", "store-test")
+	tempDir, err := os.MkdirTemp("", "store-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +23,7 @@ func TestStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-    if err := os.WriteFile(configFile, configData, 0644); err != nil {
+	if err := os.WriteFile(configFile, configData, 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -33,16 +33,17 @@ func TestStore(t *testing.T) {
 	}
 	defer s.MetadataStore.db.Close()
 
-    t.Run("CreateReadUpdateDeleteByObjectID", func(t *testing.T) {
-        testStoreOperations(t, s, "object-id", "test.txt", []byte("Hello, ObjectID test!"))
-    })
+	t.Run("CreateReadUpdateDeleteByObjectID", func(t *testing.T) {
+		testStoreOperations(t, s, "object-id", "test1.txt")
+	})
 
-    t.Run("CreateReadUpdateDeleteByObjectPath", func(t *testing.T) {
-        testStoreOperations(t, s, "object-path", "documents/report.docx", []byte("Hello, ObjectPath test!"))
-    })
+	t.Run("CreateReadUpdateDeleteByObjectPath", func(t *testing.T) {
+		testStoreOperations(t, s, "object-path", "documents/report1.docx")
+	})
 }
 
-func testStoreOperations(t *testing.T, s *Store, testCase, objectPath string, data []byte) {
+func testStoreOperations(t *testing.T, s *Store, testCase, objectPath string) {
+	data := []byte("Hello, world!")
 	updatedData := []byte("Hello, updated world!")
 
 	// Test CreateObject

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"time"
-    "os"
 )
 
 type Store struct {
@@ -31,40 +30,36 @@ func NewStore(configFile, dbPath string) (*Store, error) {
 }
 
 func (s *Store) CreateObject(objectPath string, data []byte) (string, error) {
-    objectID := generateObjectID(data)
-    localPath := filepath.Join(s.FileStorage.config.StorageDirectory, objectID)
+	objectID := generateObjectID(data)
+	localPath := filepath.Join(s.FileStorage.config.StorageDirectory, objectID)
 
-    // Check if the file already exists
-    if _, err := os.Stat(localPath); err == nil {
-        // File exists, check if metadata exists
-        metadata, err := s.MetadataStore.Get(objectID)
-        if err == nil && metadata.ObjectPath == objectPath {
-            // Object already exists with the same path, return the object ID
-            return objectID, nil
-        }
-    }
+	// Check if the object already exists
+	_, err := s.MetadataStore.Get(objectID)
+	if err == nil {
+		return "", fmt.Errorf("object with ID %s already exists", objectID)
+	}
 
-    err := s.FileStorage.Create(objectID, data)
-    if err != nil {
-        return "", fmt.Errorf("failed to create file: %w", err)
-    }
+	err = s.FileStorage.Create(objectID, data)
+	if err != nil {
+		return "", fmt.Errorf("failed to create file: %w", err)
+	}
 
-    metadata := &Metadata{
-        ObjectID:   objectID,
-        ObjectPath: objectPath,
-        LocalPath:  localPath,
-        CreatedAt:  time.Now(),
-        UpdatedAt:  time.Now(),
-    }
+	metadata := &Metadata{
+		ObjectID:   objectID,
+		ObjectPath: objectPath,
+		LocalPath:  localPath,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
 
-    err = s.MetadataStore.Create(metadata)
-    if err != nil {
-        // If metadata creation fails, rollback file creation
-        s.FileStorage.Delete(objectID)
-        return "", fmt.Errorf("failed to create metadata: %w", err)
-    }
+	err = s.MetadataStore.Create(metadata)
+	if err != nil {
+		// If metadata creation fails, rollback file creation
+		s.FileStorage.Delete(objectID)
+		return "", fmt.Errorf("failed to create metadata: %w", err)
+	}
 
-    return objectID, nil
+	return objectID, nil
 }
 
 func (s *Store) ReadObject(objectIDOrPath string) ([]byte, error) {
